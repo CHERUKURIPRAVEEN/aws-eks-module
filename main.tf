@@ -101,7 +101,8 @@ resource "aws_eks_cluster" "this" {
     local.mandatory_tags,
     {
       Name = local.cluster_name
-    }
+    },
+    var.tags
   )
 }
 
