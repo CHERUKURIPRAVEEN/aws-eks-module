@@ -76,12 +76,6 @@ data "aws_subnet" "public" {
   }
 }
 
-data "aws_subnet" "selected" {
-  for_each = toset(local.selected_subnet_ids)
-
-  id = each.value
-}
-
 resource "aws_iam_role" "cluster" {
   name = local.cluster_role_name
 
