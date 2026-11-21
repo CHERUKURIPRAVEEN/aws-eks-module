@@ -33,12 +33,22 @@ output "cluster_iam_role_arn" {
   value       = aws_iam_role.cluster.arn
 }
 
-output "node_group_role_arn" {
-  description = "IAM role ARN used by the EKS managed node group."
-  value       = aws_iam_role.node_group.arn
+output "node_group_id" {
+  description = "Default EKS managed node group ID."
+  value       = try(aws_eks_node_group.this[0].id, null)
 }
 
-output "node_group_id" {
-  description = "EKS managed node group ID."
-  value       = aws_eks_node_group.this.id
+output "node_group_role_arn" {
+  description = "Default node group IAM role ARN."
+  value       = try(aws_iam_role.node_group[0].arn, null)
+}
+
+output "launch_template_id" {
+  description = "Default node group EC2 launch template ID."
+  value       = try(aws_launch_template.node_group[0].id, null)
+}
+
+output "launch_template_version" {
+  description = "Default node group EC2 launch template version."
+  value       = try(aws_launch_template.node_group[0].latest_version, null)
 }

@@ -21,10 +21,7 @@ cluster_number = 1
 vpc_name = "MANAGEMENT_VPC"
 
 #--------------------------------------------------Subnet configuration----------------------------------------------#
-private_subnet_names = []
-public_subnet_names  = []
-private_subnet_ids   = [subnet-0bf5dc9a8c4108beb, subnet-0c1750b560afca202]
-public_subnet_ids    = [subnet-0554a38cfc652a44c, subnet-08fc11867a92e0c4e]
+subnet_ids = ["subnet-0bf5dc9a8c4108beb", "subnet-0c1750b560afca202"]
 
 #--------------------------------------------------Endpoint security-------------------------------------------------#
 endpoint_private_access = true
@@ -32,6 +29,7 @@ endpoint_public_access  = false
 public_access_cidrs     = []
 
 #--------------------------------------------------Managed node group-----------------------------------------------#
+create_default_node_group = true
 node_group_instance_types = ["t3.medium"]
 node_group_capacity_type  = "ON_DEMAND"
 node_group_min_size       = 1
@@ -39,3 +37,5 @@ node_group_desired_size   = 2
 node_group_max_size       = 3
 node_group_disk_size      = 50
 node_group_ami_type       = "AL2023_x86_64_STANDARD"
+
+enable_launch_template = true

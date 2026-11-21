@@ -261,6 +261,12 @@ variable "public_access_cidrs" {
 }
 
 #--------------------------------------------------EKS Managed Node Group Variables-------------------------------------------------#
+variable "create_default_node_group" {
+  description = "Whether to create the default EKS managed node group."
+  type        = bool
+  default     = true
+}
+
 variable "node_group_name" {
   description = "Name of the EKS managed node group."
   type        = string
@@ -392,4 +398,34 @@ variable "attach_cni_policy" {
   type        = bool
   default     = true
   nullable    = false
+}
+
+#--------------------------------------------------EKS Node Group Launch Template Variables-------------------------------------------------#
+variable "enable_launch_template" {
+  description = "Enable custom EC2 launch template for the default node group."
+  type        = bool
+  default     = true
+}
+
+variable "node_group_volume_type" {
+  description = "Root EBS volume type."
+  type        = string
+  default     = "gp3"
+
+  validation {
+    condition     = contains(["gp2", "gp3"], var.node_group_volume_type)
+    error_message = "Volume type must be gp2 or gp3."
+  }
+}
+
+variable "node_group_volume_kms_key_arn" {
+  description = "Optional customer-managed KMS key ARN for worker EBS encryption."
+  type        = string
+  default     = null
+}
+
+variable "enable_node_detailed_monitoring" {
+  description = "Enable detailed EC2 CloudWatch monitoring."
+  type        = bool
+  default     = false
 }

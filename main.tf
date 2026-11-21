@@ -43,6 +43,9 @@ locals {
     local.selected_private_subnet_ids,
     local.selected_public_subnet_ids
   )
+
+  create_launch_template = var.create_default_node_group && var.enable_launch_template
+  launch_template_name   = "${local.node_group_name}-LT"
 }
 
 data "aws_vpc" "selected" {
@@ -146,7 +149,8 @@ resource "aws_iam_role_policy_attachment" "cluster" {
 
 #----------------------------------------------------------------Node Group-------------------------------------------------#
 resource "aws_iam_role" "node_group" {
-  name = local.node_role_name
+  name  = local.node_role_name
+  count = var.create_default_node_group ? 1 : 0
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -173,19 +177,23 @@ resource "aws_iam_role" "node_group" {
 }
 
 resource "aws_iam_role_policy_attachment" "node_group_cni" {
-  count = var.attach_cni_policy ? 1 : 0
+  count = var.create_default_node_group && var.attach_cni_policy ? 1 : 0
 
-  role       = aws_iam_role.node_group.name
+  role       = aws_iam_role.node_group[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
 resource "aws_iam_role_policy_attachment" "node_group_worker" {
-  role       = aws_iam_role.node_group.name
+  count = var.create_default_node_group ? 1 : 0
+
+  role       = aws_iam_role.node_group[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
 }
 
 resource "aws_iam_role_policy_attachment" "node_group_ecr" {
-  role       = aws_iam_role.node_group.name
+  count = var.create_default_node_group ? 1 : 0
+
+  role       = aws_iam_role.node_group[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
 }
 
@@ -202,14 +210,24 @@ check "node_group_scaling" {
 
 resource "aws_eks_node_group" "this" {
   cluster_name = aws_eks_cluster.this.name
+  count        = var.create_default_node_group ? 1 : 0
 
   node_group_name = local.node_group_name
-  node_role_arn   = aws_iam_role.node_group.arn
+  node_role_arn   = aws_iam_role.node_group[0].arn
   subnet_ids      = local.selected_subnet_ids
   instance_types  = var.node_group_instance_types
   capacity_type   = var.node_group_capacity_type
   ami_type        = var.node_group_ami_type
-  disk_size       = var.node_group_disk_size
+  disk_size       = local.create_launch_template ? null : var.node_group_disk_size
+
+  dynamic "launch_template" {
+    for_each = aws_launch_template.node_group
+
+    content {
+      id      = launch_template.value.id
+      version = tostring(launch_template.value.latest_version)
+    }
+  }
 
   scaling_config {
     min_size     = var.node_group_min_size
@@ -225,6 +243,73 @@ resource "aws_eks_node_group" "this" {
     local.common_tags,
     {
       Name = local.node_group_name
+    }
+  )
+}
+
+#----------------------------------------------------------------Launch Template-------------------------------------------------#
+resource "aws_launch_template" "node_group" {
+  count = local.create_launch_template ? 1 : 0
+
+  name                   = local.launch_template_name
+  description            = "Launch template for ${local.node_group_name}"
+  update_default_version = true
+
+  # Enforce IMDSv2
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+    instance_metadata_tags      = "disabled"
+  }
+
+  # Root EBS volume
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      volume_size           = var.node_group_disk_size
+      volume_type           = var.node_group_volume_type
+      encrypted             = true
+      kms_key_id            = var.node_group_volume_kms_key_arn
+      delete_on_termination = true
+    }
+  }
+
+  # EC2 monitoring
+  monitoring {
+    enabled = var.enable_node_detailed_monitoring
+  }
+
+  # EC2 instance tags
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = merge(
+      local.common_tags,
+      {
+        Name = local.node_group_name
+      }
+    )
+  }
+
+  # EBS volume tags
+  tag_specifications {
+    resource_type = "volume"
+
+    tags = merge(
+      local.common_tags,
+      {
+        Name = "${local.node_group_name}-EBS"
+      }
+    )
+  }
+
+  # Launch template tags
+  tags = merge(
+    local.common_tags,
+    {
+      Name = local.launch_template_name
     }
   )
 }
