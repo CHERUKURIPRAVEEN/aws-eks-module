@@ -39,8 +39,3 @@ node_group_desired_size   = 2
 node_group_max_size       = 3
 node_group_disk_size      = 50
 node_group_ami_type       = "AL2023_x86_64_STANDARD"
-
-#--------------------------------------------------Cluster logging---------------------------------------------------#
-enable_cluster_logging     = false
-enabled_cluster_log_types  = ["api", "audit", "authenticator", "controllerManager"]
-cluster_log_retention_days = 30
