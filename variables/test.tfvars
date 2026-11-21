@@ -23,8 +23,8 @@ vpc_name = "MANAGEMENT_VPC"
 #--------------------------------------------------Subnet configuration----------------------------------------------#
 private_subnet_names = []
 public_subnet_names  = []
-private_subnet_ids   = []
-public_subnet_ids    = []
+private_subnet_ids   = [subnet-0bf5dc9a8c4108beb, subnet-0c1750b560afca202]
+public_subnet_ids    = [subnet-0554a38cfc652a44c, subnet-08fc11867a92e0c4e]
 
 #--------------------------------------------------Endpoint security-------------------------------------------------#
 endpoint_private_access = true
