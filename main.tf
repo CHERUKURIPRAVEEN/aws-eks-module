@@ -103,25 +103,10 @@ resource "aws_iam_role" "cluster" {
   )
 }
 
-resource "aws_cloudwatch_log_group" "cluster" {
-  count = var.enable_cluster_logging && length(var.enabled_cluster_log_types) > 0 ? 1 : 0
-
-  name              = "/aws/eks/${local.cluster_name}/cluster"
-  retention_in_days = var.cluster_log_retention_days
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.cluster_name}-LOGS"
-    }
-  )
-}
-
 resource "aws_eks_cluster" "this" {
-  name                      = local.cluster_name
-  role_arn                  = aws_iam_role.cluster.arn
-  version                   = var.cluster_version
-  enabled_cluster_log_types = var.enable_cluster_logging ? var.enabled_cluster_log_types : []
+  name     = local.cluster_name
+  role_arn = aws_iam_role.cluster.arn
+  version  = var.cluster_version
 
   vpc_config {
     subnet_ids              = local.selected_subnet_ids
@@ -143,8 +128,7 @@ resource "aws_eks_cluster" "this" {
   }
 
   depends_on = [
-    aws_iam_role_policy_attachment.cluster,
-    aws_cloudwatch_log_group.cluster
+    aws_iam_role_policy_attachment.cluster
   ]
 
   tags = merge(

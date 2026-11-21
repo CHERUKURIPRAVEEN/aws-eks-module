@@ -364,53 +364,6 @@ variable "node_group_ami_type" {
   }
 }
 
-#--------------------------------------------------EKS logs Variables-------------------------------------------------#
-variable "enable_cluster_logging" {
-  description = "Enable EKS control plane logging to CloudWatch."
-  type        = bool
-  default     = true
-  nullable    = false
-}
-
-variable "enabled_cluster_log_types" {
-  description = "List of EKS control plane log types to enable."
-  type        = list(string)
-  default = [
-    "api",
-    "audit",
-    "authenticator",
-    "controllerManager",
-    "scheduler"
-  ]
-  nullable = false
-
-  validation {
-    condition = alltrue([
-      for log_type in var.enabled_cluster_log_types :
-      contains(
-        ["api", "audit", "authenticator", "controllerManager", "scheduler"],
-        log_type
-      )
-    ])
-    error_message = "Invalid EKS control plane log type."
-  }
-}
-
-variable "cluster_log_retention_days" {
-  description = "Retention period for EKS control plane logs."
-  type        = number
-  default     = 30
-  nullable    = false
-
-  validation {
-    condition = contains(
-      [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653],
-      var.cluster_log_retention_days
-    )
-    error_message = "Provide a supported CloudWatch log retention period."
-  }
-}
-
 #--------------------------------------------------EKS KMS Encryption Variables-------------------------------------------------#
 variable "enable_cluster_kms_encryption" {
   description = "Enable customer-managed KMS encryption for EKS secrets."
