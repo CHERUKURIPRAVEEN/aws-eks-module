@@ -108,6 +108,119 @@ variable "description" {
   }
 }
 
+#--------------------------------------------------VPC and Subnet Selection Variables-------------------------------------------------#
+variable "vpc_id" {
+  description = "ID of the existing VPC"
+  type        = string
+  default     = null
+
+  validation {
+    condition = var.vpc_id == null ? true : can(
+      regex("^vpc-([0-9a-f]{8}|[0-9a-f]{17})$", var.vpc_id)
+    )
+    error_message = "Please provide a valid VPC ID."
+  }
+}
+
+variable "vpc_name" {
+  description = "Name of the existing VPC"
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.vpc_name == null ? true : trimspace(var.vpc_name) != ""
+    error_message = "VPC name must not be empty."
+  }
+
+  validation {
+    condition     = (var.vpc_id != null) != (var.vpc_name != null)
+    error_message = "Provide exactly one of vpc_id or vpc_name."
+  }
+}
+
+variable "subnet_ids" {
+  description = "List of existing subnet IDs"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for id in var.subnet_ids :
+      can(regex("^subnet-([0-9a-f]{8}|[0-9a-f]{17})$", id))
+    ])
+    error_message = "All subnet IDs must be valid."
+  }
+
+  validation {
+    condition     = length(var.subnet_ids) == length(distinct(var.subnet_ids))
+    error_message = "Duplicate subnet IDs are not allowed."
+  }
+
+  validation {
+    condition     = length(var.subnet_ids) == 0 || length(var.subnet_ids) >= 2
+    error_message = "At least two subnet IDs must be provided."
+  }
+}
+
+variable "private_subnet_ids" {
+  description = "List of private subnet IDs"
+  type        = list(string)
+  default     = []
+}
+
+variable "private_subnet_names" {
+  description = "List of private subnet names"
+  type        = list(string)
+  default     = []
+}
+
+variable "public_subnet_ids" {
+  description = "List of public subnet IDs"
+  type        = list(string)
+  default     = []
+}
+
+variable "public_subnet_names" {
+  description = "List of public subnet names"
+  type        = list(string)
+  default     = []
+}
+
+# variable "vpc_id" {
+#   description = "ID of the existing VPC where the EKS cluster will be created."
+#   type        = string
+
+#   validation {
+#     condition     = can(regex("^vpc-[0-9a-fA-F]+$", var.vpc_id))
+#     error_message = "vpc_id must be a valid AWS VPC ID."
+#   }
+# }
+
+# variable "subnet_ids" {
+#   description = "List of existing subnet IDs to use for the EKS cluster and managed node group."
+#   type        = list(string)
+
+#   validation {
+#     condition = (
+#       length(var.subnet_ids) >= 2 &&
+#       alltrue([
+#         for subnet_id in var.subnet_ids :
+#         can(regex("^subnet-[0-9a-fA-F]+$", subnet_id))
+#       ])
+#     )
+
+#     error_message = "At least two valid subnet IDs must be provided."
+#   }
+
+#   validation {
+#     condition = (
+#       length(distinct(var.subnet_ids)) == length(var.subnet_ids)
+#     )
+
+#     error_message = "subnet_ids must not contain duplicate subnet IDs."
+#   }
+# }
+
 #--------------------------------------------------EKS Cluster Variables-------------------------------------------------#
 variable "cluster_version" {
   description = "Kubernetes version for the EKS cluster."
@@ -135,39 +248,22 @@ variable "cluster_number" {
   }
 }
 
-variable "vpc_id" {
-  description = "ID of the existing VPC where the EKS cluster will be created."
-  type        = string
-
-  validation {
-    condition     = can(regex("^vpc-[0-9a-fA-F]+$", var.vpc_id))
-    error_message = "vpc_id must be a valid AWS VPC ID."
-  }
+variable "endpoint_private_access" {
+  description = "Enable private access to the EKS API endpoint"
+  type        = bool
+  default     = true
 }
 
-variable "subnet_ids" {
-  description = "List of existing subnet IDs to use for the EKS cluster and managed node group."
+variable "endpoint_public_access" {
+  description = "Enable public access to the EKS API endpoint"
+  type        = bool
+  default     = false
+}
+
+variable "public_access_cidrs" {
+  description = "Allowed CIDR blocks for the public EKS API endpoint"
   type        = list(string)
-
-  validation {
-    condition = (
-      length(var.subnet_ids) >= 2 &&
-      alltrue([
-        for subnet_id in var.subnet_ids :
-        can(regex("^subnet-[0-9a-fA-F]+$", subnet_id))
-      ])
-    )
-
-    error_message = "At least two valid subnet IDs must be provided."
-  }
-
-  validation {
-    condition = (
-      length(distinct(var.subnet_ids)) == length(var.subnet_ids)
-    )
-
-    error_message = "subnet_ids must not contain duplicate subnet IDs."
-  }
+  default     = []
 }
 
 #--------------------------------------------------EKS Managed Node Group Variables-------------------------------------------------#
@@ -272,4 +368,81 @@ variable "node_group_ami_type" {
 
     error_message = "Unsupported node_group_ami_type."
   }
+}
+
+#--------------------------------------------------EKS logs Variables-------------------------------------------------#
+variable "enable_cluster_logging" {
+  description = "Enable EKS control plane logging to CloudWatch."
+  type        = bool
+  default     = true
+  nullable    = false
+}
+
+variable "enabled_cluster_log_types" {
+  description = "List of EKS control plane log types to enable."
+  type        = list(string)
+  default = [
+    "api",
+    "audit",
+    "authenticator",
+    "controllerManager",
+    "scheduler"
+  ]
+  nullable = false
+
+  validation {
+    condition = alltrue([
+      for log_type in var.enabled_cluster_log_types :
+      contains(
+        ["api", "audit", "authenticator", "controllerManager", "scheduler"],
+        log_type
+      )
+    ])
+    error_message = "Invalid EKS control plane log type."
+  }
+}
+
+variable "cluster_log_retention_days" {
+  description = "Retention period for EKS control plane logs."
+  type        = number
+  default     = 30
+  nullable    = false
+
+  validation {
+    condition = contains(
+      [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653],
+      var.cluster_log_retention_days
+    )
+    error_message = "Provide a supported CloudWatch log retention period."
+  }
+}
+
+#--------------------------------------------------EKS KMS Encryption Variables-------------------------------------------------#
+variable "enable_cluster_kms_encryption" {
+  description = "Enable customer-managed KMS encryption for EKS secrets."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "cluster_kms_key_arn" {
+  description = "ARN of an existing customer-managed KMS key."
+  type        = string
+  default     = null
+
+  validation {
+    condition = (
+      !var.enable_cluster_kms_encryption ||
+      try(trimspace(var.cluster_kms_key_arn) != "", false)
+    )
+    error_message = "A KMS key ARN is required when customer-managed encryption is enabled."
+  }
+}
+
+#--------------------------------------------------EKS CNI Policy Attachment Variable-------------------------------------------------#
+variable "attach_cni_policy" {
+  description = "Attach the Amazon EKS CNI policy to the worker node IAM role."
+  type        = bool
+  default     = true
+  nullable    = false
 }

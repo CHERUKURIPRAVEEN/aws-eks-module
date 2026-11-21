@@ -16,13 +16,33 @@ locals {
     description      = var.description
   }
 
-  cluster_name = upper(
-    "${var.environment}-${var.environment_code}-${var.application_code}-${var.application}-${format("%02d", var.cluster_number)}"
+  common_tags = merge(
+    var.tags,
+    local.mandatory_tags
   )
 
-  selected_vpc_id     = data.aws_vpc.selected.id
-  selected_subnet_ids = var.subnet_ids
+  cluster_name      = upper("${var.environment}-${var.environment_code}-${var.application_code}-${var.application}-${format("%02d", var.cluster_number)}")
+  cluster_role_name = "${local.cluster_name}-CLUSTER-ROLE"
 
+  node_role_name = "${local.cluster_name}-NODE-ROLE"
+  node_group_name = upper(
+    coalesce(
+      var.node_group_name,
+      "${local.cluster_name}-NODES"
+    )
+  )
+
+  selected_vpc_id = var.vpc_id != null ? var.vpc_id : data.aws_vpc.selected[0].id
+  selected_private_subnet_ids = length(var.private_subnet_ids) > 0 ? var.private_subnet_ids : [
+    for subnet in data.aws_subnet.private : subnet.id
+  ]
+  selected_public_subnet_ids = length(var.public_subnet_ids) > 0 ? var.public_subnet_ids : [
+    for subnet in data.aws_subnet.public : subnet.id
+  ]
+  selected_subnet_ids = length(var.subnet_ids) > 0 ? var.subnet_ids : concat(
+    local.selected_private_subnet_ids,
+    local.selected_public_subnet_ids
+  )
   selected_subnet_azs = [
     for subnet in data.aws_subnet.selected :
     subnet.availability_zone
@@ -30,7 +50,34 @@ locals {
 }
 
 data "aws_vpc" "selected" {
-  id = var.vpc_id
+  count = var.vpc_id == null ? 1 : 0
+
+  filter {
+    name   = "tag:Name"
+    values = [var.vpc_name]
+  }
+}
+
+data "aws_subnet" "private" {
+  for_each = length(var.subnet_ids) == 0 ? toset(var.private_subnet_names) : toset([])
+
+  vpc_id = local.selected_vpc_id
+
+  filter {
+    name   = "tag:Name"
+    values = [each.value]
+  }
+}
+
+data "aws_subnet" "public" {
+  for_each = length(var.subnet_ids) == 0 ? toset(var.public_subnet_names) : toset([])
+
+  vpc_id = local.selected_vpc_id
+
+  filter {
+    name   = "tag:Name"
+    values = [each.value]
+  }
 }
 
 data "aws_subnet" "selected" {
@@ -39,29 +86,8 @@ data "aws_subnet" "selected" {
   id = each.value
 }
 
-check "subnets_belong_to_vpc" {
-  assert {
-    condition = alltrue([
-      for subnet_id in local.selected_subnet_ids :
-      data.aws_subnet.selected[subnet_id].vpc_id == local.selected_vpc_id
-    ])
-
-    error_message = "All subnet_ids must belong to the specified vpc_id."
-  }
-}
-
-check "subnets_in_multiple_azs" {
-  assert {
-    condition = length(
-      distinct(local.selected_subnet_azs)
-    ) >= 2
-
-    error_message = "At least two subnets in different Availability Zones must be provided."
-  }
-}
-
 resource "aws_iam_role" "cluster" {
-  name = "${local.cluster_name}-cluster-role"
+  name = local.cluster_role_name
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -79,30 +105,63 @@ resource "aws_iam_role" "cluster" {
     ]
   })
 
-  tags = {
-    Name = "${local.cluster_name}-cluster-role"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = local.cluster_role_name
+    }
+  )
+}
+
+resource "aws_cloudwatch_log_group" "cluster" {
+  count = var.enable_cluster_logging && length(var.enabled_cluster_log_types) > 0 ? 1 : 0
+
+  name              = "/aws/eks/${local.cluster_name}/cluster"
+  retention_in_days = var.cluster_log_retention_days
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.cluster_name}-LOGS"
+    }
+  )
 }
 
 resource "aws_eks_cluster" "this" {
-  name     = local.cluster_name
-  role_arn = aws_iam_role.cluster.arn
-  version  = var.cluster_version
+  name                      = local.cluster_name
+  role_arn                  = aws_iam_role.cluster.arn
+  version                   = var.cluster_version
+  enabled_cluster_log_types = var.enable_cluster_logging ? var.enabled_cluster_log_types : []
 
   vpc_config {
-    subnet_ids = local.selected_subnet_ids
+    subnet_ids              = local.selected_subnet_ids
+    endpoint_private_access = var.endpoint_private_access
+    endpoint_public_access  = var.endpoint_public_access
+    public_access_cidrs     = var.endpoint_public_access ? var.public_access_cidrs : null
+  }
+
+  dynamic "encryption_config" {
+    for_each = var.enable_cluster_kms_encryption ? [1] : []
+
+    content {
+      provider {
+        key_arn = var.cluster_kms_key_arn
+      }
+
+      resources = ["secrets"]
+    }
   }
 
   depends_on = [
-    aws_iam_role_policy_attachment.cluster
+    aws_iam_role_policy_attachment.cluster,
+    aws_cloudwatch_log_group.cluster
   ]
 
   tags = merge(
-    local.mandatory_tags,
+    local.common_tags,
     {
       Name = local.cluster_name
-    },
-    var.tags
+    }
   )
 }
 
@@ -113,10 +172,7 @@ resource "aws_iam_role_policy_attachment" "cluster" {
 
 #----------------------------------------------------------------Node Group-------------------------------------------------#
 resource "aws_iam_role" "node_group" {
-  name = coalesce(
-    var.node_group_name,
-    "${local.cluster_name}-node-role"
-  )
+  name = local.node_role_name
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -134,12 +190,19 @@ resource "aws_iam_role" "node_group" {
     ]
   })
 
-  tags = {
-    Name = coalesce(
-      var.node_group_name,
-      "${local.cluster_name}-node-role"
-    )
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = local.node_role_name
+    }
+  )
+}
+
+resource "aws_iam_role_policy_attachment" "node_group_cni" {
+  count = var.attach_cni_policy ? 1 : 0
+
+  role       = aws_iam_role.node_group.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
 resource "aws_iam_role_policy_attachment" "node_group_worker" {
@@ -150,11 +213,6 @@ resource "aws_iam_role_policy_attachment" "node_group_worker" {
 resource "aws_iam_role_policy_attachment" "node_group_ecr" {
   role       = aws_iam_role.node_group.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
-}
-
-resource "aws_iam_role_policy_attachment" "node_group_cni" {
-  role       = aws_iam_role.node_group.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
 check "node_group_scaling" {
@@ -171,19 +229,13 @@ check "node_group_scaling" {
 resource "aws_eks_node_group" "this" {
   cluster_name = aws_eks_cluster.this.name
 
-  node_group_name = coalesce(
-    var.node_group_name,
-    "${local.cluster_name}-nodes"
-  )
-
-  node_role_arn = aws_iam_role.node_group.arn
-
-  subnet_ids = local.selected_subnet_ids
-
-  instance_types = var.node_group_instance_types
-  capacity_type  = var.node_group_capacity_type
-  ami_type       = var.node_group_ami_type
-  disk_size      = var.node_group_disk_size
+  node_group_name = local.node_group_name
+  node_role_arn   = aws_iam_role.node_group.arn
+  subnet_ids      = local.selected_subnet_ids
+  instance_types  = var.node_group_instance_types
+  capacity_type   = var.node_group_capacity_type
+  ami_type        = var.node_group_ami_type
+  disk_size       = var.node_group_disk_size
 
   scaling_config {
     min_size     = var.node_group_min_size
@@ -195,19 +247,10 @@ resource "aws_eks_node_group" "this" {
     max_unavailable = 1
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.node_group_worker,
-    aws_iam_role_policy_attachment.node_group_ecr,
-    aws_iam_role_policy_attachment.node_group_cni
-  ]
-
   tags = merge(
-    local.mandatory_tags,
+    local.common_tags,
     {
-      Name = coalesce(
-        var.node_group_name,
-        "${local.cluster_name}-nodes"
-      )
+      Name = local.node_group_name
     }
   )
 }
