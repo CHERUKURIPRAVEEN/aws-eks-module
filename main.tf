@@ -43,10 +43,6 @@ locals {
     local.selected_private_subnet_ids,
     local.selected_public_subnet_ids
   )
-  selected_subnet_azs = [
-    for subnet in data.aws_subnet.selected :
-    subnet.availability_zone
-  ]
 }
 
 data "aws_vpc" "selected" {

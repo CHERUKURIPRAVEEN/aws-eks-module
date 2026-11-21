@@ -1,10 +1,4 @@
 #--------------------------------------------------COMMON Variables-------------------------------------------------#
-variable "region" {
-  description = "AWS region where the EKS cluster will be created."
-  type        = string
-  default     = "us-east-1"
-}
-
 variable "application" {
   description = "Application tag value for the EKS Cluster. Maximum of 7 characters."
   type        = string
