@@ -245,6 +245,12 @@ resource "aws_eks_node_group" "this" {
       Name = local.node_group_name
     }
   )
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_group_worker,
+    aws_iam_role_policy_attachment.node_group_ecr,
+    aws_iam_role_policy_attachment.node_group_cni
+  ]
 }
 
 #----------------------------------------------------------------Launch Template-------------------------------------------------#
@@ -259,7 +265,7 @@ resource "aws_launch_template" "node_group" {
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
-    http_put_response_hop_limit = 2
+    http_put_response_hop_limit = 1
     instance_metadata_tags      = "disabled"
   }
 
