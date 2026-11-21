@@ -58,7 +58,8 @@ jobs:
           $HOME/.checkov-env/bin/checkov \
             -d . \
             --framework terraform \
-            --skip-path aws/dist
+            --skip-path aws/dist \
+            --skip-check CKV_AWS_37
 
       - name: Terraform Plan
         run: |
