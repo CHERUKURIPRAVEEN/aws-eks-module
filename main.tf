@@ -57,11 +57,11 @@ data "aws_vpc" "selected" {
   }
 }
 
-data "aws_subnet" "selected" {
-  for_each = toset(local.selected_subnet_ids)
+# data "aws_subnet" "selected" {
+#   for_each = toset(local.selected_subnet_ids)
 
-  id = each.value
-}
+#   id = each.value
+# }
 
 data "aws_subnet" "private" {
   for_each = length(var.subnet_ids) == 0 ? toset(var.private_subnet_names) : toset([])
