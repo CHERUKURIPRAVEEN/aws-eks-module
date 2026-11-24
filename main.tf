@@ -21,7 +21,7 @@ locals {
     local.mandatory_tags
   )
 
-  cluster_name      = upper("${var.environment}-${var.environment_code}-${var.application_code}-${var.application}-${format("%02d", var.cluster_number)}")
+  cluster_name      = upper("${var.environment}-${var.application_code}-${var.application}-${format("%02d", var.cluster_number)}")
   cluster_role_name = "${local.cluster_name}-CLUSTER-ROLE"
 
   node_role_name = "${local.cluster_name}-NODE-ROLE"
@@ -55,6 +55,12 @@ data "aws_vpc" "selected" {
     name   = "tag:Name"
     values = [var.vpc_name]
   }
+}
+
+data "aws_subnet" "selected" {
+  for_each = toset(local.selected_subnet_ids)
+
+  id = each.value
 }
 
 data "aws_subnet" "private" {
@@ -118,6 +124,11 @@ resource "aws_eks_cluster" "this" {
     public_access_cidrs     = var.endpoint_public_access ? var.public_access_cidrs : null
   }
 
+  access_config {
+    authentication_mode                         = "API"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
   dynamic "encryption_config" {
     for_each = var.enable_cluster_kms_encryption ? [1] : []
 
@@ -129,6 +140,10 @@ resource "aws_eks_cluster" "this" {
       resources = ["secrets"]
     }
   }
+
+  bootstrap_self_managed_addons = false
+
+  deletion_protection = var.enable_deletion_protection
 
   depends_on = [
     aws_iam_role_policy_attachment.cluster
@@ -209,9 +224,9 @@ check "node_group_scaling" {
 }
 
 resource "aws_eks_node_group" "this" {
-  cluster_name = aws_eks_cluster.this.name
-  count        = var.create_default_node_group ? 1 : 0
-
+  cluster_name    = aws_eks_cluster.this.name
+  version         = aws_eks_cluster.this.version
+  count           = var.create_default_node_group ? 1 : 0
   node_group_name = local.node_group_name
   node_role_arn   = aws_iam_role.node_group[0].arn
   subnet_ids      = local.selected_subnet_ids
@@ -249,7 +264,8 @@ resource "aws_eks_node_group" "this" {
   depends_on = [
     aws_iam_role_policy_attachment.node_group_worker,
     aws_iam_role_policy_attachment.node_group_ecr,
-    aws_iam_role_policy_attachment.node_group_cni
+    aws_iam_role_policy_attachment.node_group_cni,
+    aws_eks_addon.vpc_cni
   ]
 }
 
@@ -318,4 +334,213 @@ resource "aws_launch_template" "node_group" {
       Name = local.launch_template_name
     }
   )
+}
+
+#-------------------------------------------------Cluster Admin Access-------------------------------------------------#
+# resource "aws_eks_access_entry" "cluster_admin" {
+#   cluster_name  = aws_eks_cluster.this.name
+#   principal_arn = var.cluster_admin_role_arn
+#   type          = "STANDARD"
+
+#   tags = merge(
+#     local.common_tags,
+#     {
+#       Name = "${local.cluster_name}-ADMIN-ACCESS"
+#     }
+#   )
+# }
+
+# resource "aws_eks_access_policy_association" "cluster_admin" {
+#   cluster_name  = aws_eks_cluster.this.name
+#   principal_arn = aws_eks_access_entry.cluster_admin.principal_arn
+
+#   policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+#   access_scope {
+#     type = "cluster"
+#   }
+# }
+
+#-------------------------------------------------Additional Access Entries-------------------------------------------------#
+resource "aws_eks_access_entry" "additional" {
+  for_each = var.access_entries
+
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = each.value.principal_arn
+  type          = "STANDARD"
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.cluster_name}-${upper(each.key)}-ACCESS"
+    }
+  )
+}
+
+resource "aws_eks_access_policy_association" "additional" {
+  for_each = var.access_entries
+
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = aws_eks_access_entry.additional[each.key].principal_arn
+
+  policy_arn = "arn:aws:eks::aws:cluster-access-policy/${each.value.policy}"
+
+  access_scope {
+    type       = each.value.scope
+    namespaces = each.value.scope == "namespace" ? each.value.namespaces : null
+  }
+}
+
+#-------------------------------------------------EKS Addons-------------------------------------------------#
+resource "aws_eks_addon" "vpc_cni" {
+  count = var.enable_vpc_cni_addon ? 1 : 0
+
+  cluster_name  = aws_eks_cluster.this.name
+  addon_name    = "vpc-cni"
+  addon_version = var.vpc_cni_addon_version
+
+  resolve_conflicts_on_create = "NONE"
+  resolve_conflicts_on_update = "PRESERVE"
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.cluster_name}-VPC-CNI"
+    }
+  )
+}
+
+resource "aws_eks_addon" "coredns" {
+  count = var.enable_coredns_addon ? 1 : 0
+
+  cluster_name  = aws_eks_cluster.this.name
+  addon_name    = "coredns"
+  addon_version = var.coredns_addon_version
+
+  resolve_conflicts_on_create = "NONE"
+  resolve_conflicts_on_update = "PRESERVE"
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.cluster_name}-COREDNS"
+    }
+  )
+
+  depends_on = [
+    aws_eks_node_group.this,
+    aws_eks_addon.vpc_cni
+  ]
+}
+
+resource "aws_eks_addon" "kube_proxy" {
+  count = var.enable_kube_proxy_addon ? 1 : 0
+
+  cluster_name  = aws_eks_cluster.this.name
+  addon_name    = "kube-proxy"
+  addon_version = var.kube_proxy_addon_version
+
+  resolve_conflicts_on_create = "NONE"
+  resolve_conflicts_on_update = "PRESERVE"
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.cluster_name}-KUBE-PROXY"
+    }
+  )
+
+  depends_on = [
+    aws_eks_addon.vpc_cni,
+    aws_eks_node_group.this
+  ]
+}
+
+resource "aws_iam_role" "ebs_csi" {
+  count = var.enable_ebs_csi_addon ? 1 : 0
+
+  name = "${local.cluster_name}-EBS-CSI-ROLE"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Principal = {
+          Service = "pods.eks.amazonaws.com"
+        }
+
+        Action = [
+          "sts:AssumeRole",
+          "sts:TagSession"
+        ]
+      }
+    ]
+  })
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.cluster_name}-EBS-CSI-ROLE"
+    }
+  )
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  count = var.enable_ebs_csi_addon ? 1 : 0
+
+  role       = aws_iam_role.ebs_csi[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+resource "aws_eks_addon" "pod_identity_agent" {
+  count = var.enable_ebs_csi_addon ? 1 : 0
+
+  cluster_name  = aws_eks_cluster.this.name
+  addon_name    = "eks-pod-identity-agent"
+  addon_version = var.pod_identity_agent_version
+
+  resolve_conflicts_on_create = "NONE"
+  resolve_conflicts_on_update = "PRESERVE"
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.cluster_name}-POD-IDENTITY-AGENT"
+    }
+  )
+
+  depends_on = [
+    aws_eks_node_group.this
+  ]
+}
+
+resource "aws_eks_addon" "ebs_csi" {
+  count = var.enable_ebs_csi_addon ? 1 : 0
+
+  cluster_name  = aws_eks_cluster.this.name
+  addon_name    = "aws-ebs-csi-driver"
+  addon_version = var.ebs_csi_addon_version
+
+  resolve_conflicts_on_create = "NONE"
+  resolve_conflicts_on_update = "PRESERVE"
+
+  pod_identity_association {
+    role_arn        = aws_iam_role.ebs_csi[0].arn
+    service_account = "ebs-csi-controller-sa"
+  }
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.cluster_name}-EBS-CSI"
+    }
+  )
+
+  depends_on = [
+    aws_eks_addon.pod_identity_agent,
+    aws_iam_role_policy_attachment.ebs_csi
+  ]
 }

@@ -27,3 +27,6 @@ terraform.rc
 # IDE files
 .idea/
 .vscode/
+
+# dot files
+*.dot

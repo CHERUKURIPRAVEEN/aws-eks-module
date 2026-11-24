@@ -219,7 +219,7 @@ variable "public_subnet_names" {
 variable "cluster_version" {
   description = "Kubernetes version for the EKS cluster."
   type        = string
-  default     = null
+  nullable    = false
 
   validation {
     condition = (
@@ -428,4 +428,135 @@ variable "enable_node_detailed_monitoring" {
   description = "Enable detailed EC2 CloudWatch monitoring."
   type        = bool
   default     = false
+}
+
+#--------------------------------------------------EKS Cluster Admin Role Variable-------------------------------------------------#
+# variable "cluster_admin_role_arn" {
+#   description = "Existing IAM role ARN granted EKS cluster administrator access."
+#   type        = string
+#   nullable    = false
+
+#   validation {
+#     condition = can(regex(
+#       "^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/.+$",
+#       var.cluster_admin_role_arn
+#     ))
+#     error_message = "Provide a valid IAM role ARN."
+#   }
+# }
+
+variable "access_entries" {
+  description = "Additional IAM roles and their EKS access policies."
+  type = map(object({
+    principal_arn = string
+    policy        = string
+    scope         = string
+    namespaces    = optional(list(string), [])
+  }))
+
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for entry in values(var.access_entries) :
+      can(regex(
+        "^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/.+$",
+        entry.principal_arn
+      ))
+    ])
+    error_message = "Each principal_arn must be a valid IAM role ARN."
+  }
+
+  validation {
+    condition = alltrue([
+      for entry in values(var.access_entries) :
+      contains([
+        "AmazonEKSClusterAdminPolicy",
+        "AmazonEKSAdminPolicy",
+        "AmazonEKSEditPolicy",
+        "AmazonEKSViewPolicy"
+      ], entry.policy)
+    ])
+    error_message = "Provide a supported EKS access policy."
+  }
+
+  validation {
+    condition = alltrue([
+      for entry in values(var.access_entries) :
+      contains(["cluster", "namespace"], entry.scope)
+    ])
+    error_message = "Scope must be cluster or namespace."
+  }
+
+  validation {
+    condition = alltrue([
+      for entry in values(var.access_entries) :
+      entry.scope == "cluster"
+      ? length(entry.namespaces) == 0
+      : length(entry.namespaces) > 0
+    ])
+    error_message = "Cluster scope must have no namespaces; namespace scope requires at least one namespace."
+  }
+}
+
+#--------------------------------------------------EKS VPC CNI Add-on Variables-------------------------------------------------#
+variable "enable_vpc_cni_addon" {
+  description = "Enable the Amazon EKS managed VPC CNI add-on."
+  type        = bool
+  default     = true
+}
+
+variable "vpc_cni_addon_version" {
+  description = "Optional VPC CNI add-on version. Null uses the EKS default compatible version."
+  type        = string
+  default     = null
+}
+
+variable "enable_coredns_addon" {
+  description = "Enable the Amazon EKS managed CoreDNS add-on."
+  type        = bool
+  default     = true
+}
+
+variable "coredns_addon_version" {
+  description = "Optional CoreDNS add-on version. Null uses an AWS-selected compatible version."
+  type        = string
+  default     = null
+}
+
+variable "enable_kube_proxy_addon" {
+  description = "Enable the Amazon EKS managed kube-proxy add-on."
+  type        = bool
+  default     = true
+}
+
+variable "kube_proxy_addon_version" {
+  description = "Optional kube-proxy add-on version. Null uses the AWS-selected compatible default."
+  type        = string
+  default     = null
+}
+
+variable "enable_ebs_csi_addon" {
+  description = "Enable the Amazon EBS CSI Driver add-on."
+  type        = bool
+  default     = true
+}
+
+variable "ebs_csi_addon_version" {
+  description = "Optional EBS CSI Driver version. Null uses the AWS-selected compatible default."
+  type        = string
+  default     = null
+}
+
+variable "pod_identity_agent_version" {
+  description = "Optional EKS Pod Identity Agent version. Null uses the AWS-selected compatible default."
+  type        = string
+  default     = null
+}
+
+#--------------------------------------------------EKS Cluster Deletion Protection Variable-------------------------------------------------#
+variable "enable_deletion_protection" {
+  description = "Protect the EKS cluster from accidental deletion."
+  type        = bool
+  default     = true
 }

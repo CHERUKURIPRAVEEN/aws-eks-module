@@ -1,1496 +1,500 @@
 # AWS EKS Terraform Module
 
-A reusable and production-oriented Terraform module for creating an **Amazon EKS cluster with an AWS Managed Node Group** using an existing VPC and existing subnets.
+Reusable Terraform module for provisioning an **Amazon Elastic Kubernetes Service (EKS) cluster** in an **existing VPC**, with an optional **EKS managed node group**, optional **EC2 launch template**, configurable networking, IAM roles, organizational tagging, and encryption settings.
 
-The module is designed with strong input validation, flexible VPC selection, subnet validation, configurable Kubernetes versions, and configurable managed node group settings.
-
----
+> **Implementation status:** The repository implements the features documented below. A test deployment was reported successful using Terraform 1.12.2 and AWS provider 6.73.0 (`9 added, 0 changed, 0 destroyed`). This does **not** establish production readiness or Kubernetes workload health. Read [Current limitations and roadmap](#current-limitations-and-roadmap) before production use.
 
 ## Features
 
-* Create an Amazon EKS cluster
-* Create an EKS Managed Node Group
-* Use an existing VPC
-* Support VPC selection by:
-
-  * VPC ID
-  * VPC Name
-* Use existing subnet IDs
-* Require a minimum of two subnets
-* Validate subnet IDs
-* Prevent duplicate subnet IDs
-* Configure Kubernetes cluster version
-* Configure managed node group:
-
-  * Instance types
-  * Capacity type
-  * Minimum size
-  * Desired size
-  * Maximum size
-  * Disk size
-  * AMI type
-* Strong Terraform variable validation
-* Support common organizational tags
-* Designed for reuse across environments
-
----
+- **Existing VPC selection:** Specify either `vpc_id` or `vpc_name` (matched against the AWS `Name` tag).
+- **Existing subnet selection:** Provide a direct list of subnet IDs, or combine private/public subnet IDs and/or Name-tag lookups.
+- **Deterministic uppercase names:** Cluster, roles, node group, and launch template use a consistent naming convention.
+- **Mandatory organization tags:** Caller-supplied `tags` are merged, with mandatory tags taking precedence.
+- **EKS cluster configuration:** Optional Kubernetes version, private/public API endpoint switches, and optional customer-managed KMS encryption of Kubernetes secrets.
+- **IAM roles:** Separate EKS control plane and EC2 worker roles, with AWS-managed policy attachments.
+- **Optional default managed node group:** Configure instance types, capacity type, AMI family, disk size, and scaling boundaries.
+- **Optional EC2 launch template:** Encrypted EBS root volume, GP2/GP3 option, optional KMS key, required IMDSv2, response hop limit **1**, instance/volume tags, and optional detailed monitoring.
+- **Optional worker CNI policy attachment:** Can be disabled when AWS VPC CNI credentials are supplied through a separate mechanism.
+- **Terraform outputs:** Cluster identity, endpoint, security group, IAM roles, node group, and launch template identifiers.
 
 ## Architecture
 
-The module creates the following AWS resources:
-
 ```text
-                         ┌──────────────────────────┐
-                         │       Existing VPC       │
-                         │                          │
-                         │  ┌────────────────────┐  │
-                         │  │   Private/Public   │  │
-                         │  │      Subnets       │  │
-                         │  └─────────┬──────────┘  │
-                         │            │             │
-                         └────────────┼─────────────┘
-                                      │
-                                      ▼
-                         ┌──────────────────────────┐
-                         │       EKS Cluster        │
-                         │                          │
-                         │     Kubernetes API       │
-                         └────────────┬─────────────┘
-                                      │
-                                      ▼
-                         ┌──────────────────────────┐
-                         │   Managed Node Group     │
-                         │                          │
-                         │  EC2 Worker Nodes        │
-                         │  t3.medium / custom      │
-                         └──────────────────────────┘
+Existing AWS VPC
+  └── Existing subnets (at least two suitable subnets recommended)
+        ├── EKS control plane
+        │     ├── EKS cluster IAM role
+        │     └── Optional customer-managed secrets KMS key
+        └── Optional EKS managed node group
+              ├── EC2 worker IAM role + policy attachments
+              └── Optional EC2 launch template
+                    ├── IMDSv2 (required; response hop limit 1)
+                    ├── Encrypted root EBS volume (GP3 by default)
+                    └── EC2 instance / volume tags
 ```
 
----
+**Scope:** This module **does not create a VPC, subnets, NAT gateways, route tables, VPN, or VPC endpoints**. Network configuration and private endpoint connectivity must exist before deployment.
 
-## Module Scope
+## Requirements
 
-This module intentionally focuses on the core EKS components:
+| Component | Requirement |
+|---|---|
+| Terraform CLI | `>= 1.12.0` |
+| Terraform AWS provider | `>= 6.0, < 7.0` |
+| AWS account | IAM permission to create EKS, IAM roles/policy attachments, managed node groups, and optionally EC2 launch templates |
+| Networking | Existing VPC and appropriately routed subnets in the target AWS Region |
+| Access | Configured AWS credentials in the **root module** (for example, AWS SSO or CI/CD role federation) |
+| Optional tools | AWS CLI and `kubectl` for post-deployment checks; Checkov for policy scans |
 
-```text
-EKS Cluster
-     │
-     ├── Mandatory IAM Role
-     │
-     └── Managed Node Group
-              │
-              └── EC2 Worker Nodes
-```
+The module declares provider **requirements** but does not configure credentials or a provider region. Configure the AWS provider in your root Terraform project.
 
-Networking resources such as the VPC and subnets are expected to already exist.
+## Quick start
 
----
-
-# Requirements
-
-| Name         | Version  |
-| ------------ | -------- |
-| Terraform    | >= 1.5.0 |
-| AWS Provider | >= 5.0   |
-| AWS Account  | Required |
-
-The AWS account must have sufficient permissions to create EKS clusters, IAM roles/policies, and managed node groups.
-
----
-
-# AWS Services
-
-This module uses the following AWS services:
-
-* Amazon EKS
-* Amazon EC2
-* Amazon IAM
-* Amazon VPC
-
----
-
-# Usage
-
-## Basic Usage
+Example root module (`main.tf`):
 
 ```hcl
-module "eks" {
-  source = "git::https://github.com/CHERUKURIPRAVEEN/aws-eks-module.git"
+terraform {
+  required_version = ">= 1.12.0"
 
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0, < 7.0"
+    }
+  }
+}
+
+provider "aws" {
   region = "us-east-1"
+}
 
-  application      = "EKSAPP"
-  application_code = "EKS"
+module "eks" {
+  source = "git::https://github.com/CHERUKURIPRAVEEN/aws-eks-module.git?ref=master"
 
+  application      = "Atf"
+  application_code = "TF"
   environment      = "Dev"
   environment_code = "A1"
+  cluster_number   = 1
+  project          = "Ptf"
+  backup           = "NonProd"
+  owner            = "platform@veen.com"
+  app_owner        = "platform@veen.com"
+  description      = "Terraform EKS module example environment"
 
-  project     = "EKS"
-  owner       = "devops@veen.com"
-  app_owner   = "appowner@veen.com"
-  backup      = "NonProd"
-  description = "EKS cluster test environment"
+  # Choose exactly one: vpc_id OR vpc_name.
+  vpc_name = "MANAGEMENT_VPC"
 
-  vpc_id = "vpc-0123456789abcdef0"
+  # Replace with two or more existing, compatible subnet IDs.
+  subnet_ids = ["subnet-aaaaaaaaaaaaaaaaa", "subnet-bbbbbbbbbbbbbbbbb"]
 
-  subnet_ids = [
-    "subnet-0123456789abcdef0",
-    "subnet-0123456789abcdef1"
-  ]
+  # Pin a supported version approved for your environment.
+  # The current module allows null (AWS selects its default).
+  cluster_version = "1.37"
 
-  cluster_name    = "test-eks-cluster"
-  cluster_version = "1.33"
+  endpoint_private_access = true
+  endpoint_public_access  = false
 
-  node_group_name = "test-eks-ng"
+  create_default_node_group = true
+  node_group_instance_types = ["t3.medium"]
+  node_group_capacity_type  = "ON_DEMAND"
+  node_group_min_size       = 1
+  node_group_desired_size   = 2
+  node_group_max_size       = 3
+  node_group_disk_size      = 50
+  node_group_ami_type       = "AL2023_x86_64_STANDARD"
 
-  node_group_instance_types = [
-    "t3.medium"
-  ]
+  enable_launch_template         = true
+  node_group_volume_type         = "gp3"
+  enable_node_detailed_monitoring = false
 
-  node_group_capacity_type = "ON_DEMAND"
-
-  node_group_min_size     = 1
-  node_group_desired_size = 2
-  node_group_max_size     = 3
-
-  node_group_disk_size = 50
-
-  node_group_ami_type = "AL2023_x86_64_STANDARD"
+  tags = {
+    managed_by  = "Terraform"
+    cost_center = "CloudOps"
+  }
 }
 ```
 
----
-
-# Provider Configuration
-
-The AWS provider should be configured in the root module.
-
-```hcl
-provider "aws" {
-  region = var.region
-}
-```
-
----
-
-# Input Variables
-
-## Common Variables
-
-### `region`
-
-AWS region where the EKS cluster will be created.
-
-```hcl
-region = "us-east-1"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-"us-east-1"
-```
-
----
-
-### `application`
-
-Application name used for tagging and resource identification.
-
-Maximum length: **7 characters**.
-
-```hcl
-application = "EKSAPP"
-```
-
-**Type:**
-
-```text
-string
-```
-
----
-
-### `application_code`
-
-Application code used for resource identification and tagging.
-
-Maximum length: **3 characters**.
-
-```hcl
-application_code = "EKS"
-```
-
-**Type:**
-
-```text
-string
-```
-
----
-
-### `environment`
-
-Environment in which the EKS cluster is deployed.
-
-Supported values:
-
-```text
-Dev
-Qa
-Stage
-PreProd
-Production
-```
-
-Example:
-
-```hcl
-environment = "Dev"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-"Dev"
-```
-
----
-
-### `environment_code`
-
-Two-character environment code.
-
-Examples:
-
-```text
-A1
-S1
-S2
-SX
-P1
-P2
-PX
-PR
-PD
-```
-
-Example:
-
-```hcl
-environment_code = "A1"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-"A1"
-```
-
----
-
-### `tags`
-
-Additional tags to be applied to resources.
-
-Example:
-
-```hcl
-tags = {
-  env = "NP"
-}
-```
-
-**Type:**
-
-```text
-map(string)
-```
-
-**Default:**
-
-```hcl
-{
-  env = "NP"
-}
-```
-
----
-
-### `project`
-
-Project name associated with the EKS cluster.
-
-Maximum length: **7 characters**.
-
-```hcl
-project = "EKS"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-""
-```
-
----
-
-### `owner`
-
-Email address of the EKS cluster owner.
-
-The value must use the organization's `@veen.com` domain.
-
-Example:
-
-```hcl
-owner = "devops@veen.com"
-```
-
-**Type:**
-
-```text
-string
-```
-
----
-
-### `app_owner`
-
-Email address of the application owner.
-
-The value must use the organization's `@veen.com` domain.
-
-Example:
-
-```hcl
-app_owner = "appowner@veen.com"
-```
-
-**Type:**
-
-```text
-string
-```
-
----
-
-### `backup`
-
-Backup classification for the EKS cluster.
-
-Supported values:
-
-```text
-N/A
-NonProd
-Prod
-```
-
-Example:
-
-```hcl
-backup = "NonProd"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-"N/A"
-```
-
----
-
-### `description`
-
-Description associated with the EKS cluster.
-
-Minimum length: **10 characters**.
-
-Example:
-
-```hcl
-description = "EKS cluster test environment"
-```
-
-**Type:**
-
-```text
-string
-```
-
----
-
-# VPC Variables
-
-## `vpc_id`
-
-Existing VPC ID to use for the EKS cluster.
-
-Example:
-
-```hcl
-vpc_id = "vpc-0123456789abcdef0"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-null
-```
-
-The value must match the AWS VPC ID format:
-
-```text
-vpc-xxxxxxxxxxxxxxxxx
-```
-
----
-
-## `vpc_name`
-
-Existing VPC Name tag used to identify the VPC.
-
-Example:
-
-```hcl
-vpc_name = "TF_VPC"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-null
-```
-
----
-
-## `required_vpc_name`
-
-Predefined VPC name used for VPC discovery.
-
-Supported values:
-
-```text
-MANAGEMENT_VPC
-DEV_VPC
-STAGE_VPC
-PREPROD_VPC
-PRODUCTION_VPC
-TF_VPC
-```
-
-Example:
-
-```hcl
-required_vpc_name = "TF_VPC"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-"MANAGEMENT_VPC"
-```
-
----
-
-# Subnet Variables
-
-## `subnet_ids`
-
-List of existing subnet IDs to use for the EKS cluster and managed node group.
-
-At least **two subnet IDs** must be provided.
-
-Example:
-
-```hcl
-subnet_ids = [
-  "subnet-0123456789abcdef0",
-  "subnet-0123456789abcdef1"
-]
-```
-
-**Type:**
-
-```text
-list(string)
-```
-
-The module validates:
-
-* At least two subnets are provided
-* Every subnet ID follows the AWS subnet ID format
-* Duplicate subnet IDs are not allowed
-
-Valid format:
-
-```text
-subnet-xxxxxxxxxxxxxxxxx
-```
-
----
-
-# EKS Cluster Variables
-
-## `cluster_name`
-
-Name of the EKS cluster.
-
-Example:
-
-```hcl
-cluster_name = "test-eks-cluster"
-```
-
-**Type:**
-
-```text
-string
-```
-
-The value must not be empty.
-
----
-
-## `cluster_version`
-
-Kubernetes version for the EKS cluster.
-
-Example:
-
-```hcl
-cluster_version = "1.33"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-null
-```
-
-The expected format is:
-
-```text
-MAJOR.MINOR
-```
-
-Examples:
-
-```text
-1.31
-1.32
-1.33
-```
-
-If `null` is provided, the AWS provider/EKS service default behavior is used.
-
----
-
-# Managed Node Group Variables
-
-## `node_group_name`
-
-Name of the EKS managed node group.
-
-Example:
-
-```hcl
-node_group_name = "test-eks-ng"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-null
-```
-
-If provided, the value must not be empty.
-
----
-
-## `node_group_instance_types`
-
-EC2 instance types used by the managed node group.
-
-Example:
-
-```hcl
-node_group_instance_types = [
-  "t3.medium"
-]
-```
-
-Multiple instance types can be supplied:
-
-```hcl
-node_group_instance_types = [
-  "t3.medium",
-  "t3.large"
-]
-```
-
-**Type:**
-
-```text
-list(string)
-```
-
-**Default:**
-
-```hcl
-[
-  "t3.medium"
-]
-```
-
-At least one instance type must be provided.
-
----
-
-## `node_group_capacity_type`
-
-Capacity type for the managed node group.
-
-Supported values:
-
-```text
-ON_DEMAND
-SPOT
-```
-
-Example:
-
-```hcl
-node_group_capacity_type = "ON_DEMAND"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-"ON_DEMAND"
-```
-
-### ON_DEMAND
-
-Recommended when predictable availability and stability are more important than cost optimization.
-
-### SPOT
-
-Recommended for workloads that can tolerate interruptions and are optimized for cost.
-
----
-
-## `node_group_min_size`
-
-Minimum number of nodes in the managed node group.
-
-Example:
-
-```hcl
-node_group_min_size = 1
-```
-
-**Type:**
-
-```text
-number
-```
-
-**Default:**
-
-```text
-1
-```
-
-Minimum allowed value:
-
-```text
-0
-```
-
----
-
-## `node_group_desired_size`
-
-Desired number of nodes in the managed node group.
-
-Example:
-
-```hcl
-node_group_desired_size = 2
-```
-
-**Type:**
-
-```text
-number
-```
-
-**Default:**
-
-```text
-2
-```
-
-Minimum allowed value:
-
-```text
-1
-```
-
----
-
-## `node_group_max_size`
-
-Maximum number of nodes in the managed node group.
-
-Example:
-
-```hcl
-node_group_max_size = 3
-```
-
-**Type:**
-
-```text
-number
-```
-
-**Default:**
-
-```text
-3
-```
-
-Minimum allowed value:
-
-```text
-1
-```
-
----
-
-## `node_group_disk_size`
-
-Root EBS volume size for worker nodes.
-
-Example:
-
-```hcl
-node_group_disk_size = 50
-```
-
-**Type:**
-
-```text
-number
-```
-
-**Default:**
-
-```text
-50
-```
-
-Minimum allowed value:
-
-```text
-20 GiB
-```
-
----
-
-## `node_group_ami_type`
-
-AMI type used by the managed node group.
-
-Supported values:
-
-```text
-AL2023_x86_64_STANDARD
-AL2023_ARM_64_STANDARD
-AL2023_x86_64_NVIDIA
-AL2023_x86_64_NEURON
-```
-
-Example:
-
-```hcl
-node_group_ami_type = "AL2023_x86_64_STANDARD"
-```
-
-**Type:**
-
-```text
-string
-```
-
-**Default:**
-
-```text
-"AL2023_x86_64_STANDARD"
-```
-
----
-
-# Complete `test.tfvars`
-
-The following configuration can be used as a starting point for testing.
-
-```hcl
-#--------------------------------------------------COMMON Variables-------------------------------------------------#
-
-region = "us-east-1"
-
-application = "EKSAPP"
-
-application_code = "EKS"
-
-environment = "Dev"
-
-environment_code = "A1"
-
-tags = {
-  env = "NP"
-}
-
-project = "EKS"
-
-owner = "devops@veen.com"
-
-app_owner = "appowner@veen.com"
-
-backup = "NonProd"
-
-description = "EKS cluster test environment"
-
-
-#--------------------------------------------------VPC Variables-------------------------------------------------#
-
-vpc_id = "vpc-0123456789abcdef0"
-
-vpc_name = null
-
-required_vpc_name = "TF_VPC"
-
-
-#--------------------------------------------------Subnet Variables-------------------------------------------------#
-
-subnet_ids = [
-  "subnet-0123456789abcdef0",
-  "subnet-0123456789abcdef1"
-]
-
-
-#--------------------------------------------------EKS Cluster Variables-------------------------------------------------#
-
-cluster_name = "test-eks-cluster"
-
-cluster_version = "1.33"
-
-
-#--------------------------------------------------EKS Managed Node Group Variables-------------------------------------------------#
-
-node_group_name = "test-eks-ng"
-
-node_group_instance_types = [
-  "t3.medium"
-]
-
-node_group_capacity_type = "ON_DEMAND"
-
-node_group_min_size = 1
-
-node_group_desired_size = 2
-
-node_group_max_size = 3
-
-node_group_disk_size = 50
-
-node_group_ami_type = "AL2023_x86_64_STANDARD"
-```
-
-Replace the example VPC and subnet IDs with actual AWS resources.
-
----
-
-# Terraform Commands
-
-## Initialize
+> **Important:** The email validation in the current repository requires `owner` and `app_owner` to end in `@veen.com`. Modify this validation in your fork if your organization uses another email domain. The subnet IDs above are placeholders.
+>
+> For repeatable releases, replace `ref=master` with a tested immutable Git tag or commit SHA.
+
+Deploy from the **root Terraform directory**:
 
 ```bash
 terraform init
-```
-
-## Format
-
-```bash
-terraform fmt -recursive
-```
-
-## Validate
-
-```bash
+terraform fmt -check -recursive
 terraform validate
+terraform plan -out=tfplan
+terraform apply tfplan
 ```
 
-## Plan
+To use this repository's existing test values when executing Terraform **from the module repository itself**:
 
 ```bash
-terraform plan -var-file="test.tfvars"
+terraform init
+terraform validate
+terraform plan -var-file="variables/test.tfvars" -out=tfplan
+terraform apply tfplan
 ```
 
-## Apply
+Do **not** commit `tfplan`, state files, or credentials. Use a secure remote Terraform backend with locking for shared environments.
+
+## Networking and subnet selection
+
+The module resolves the target VPC from either `vpc_id` or `vpc_name`. **Exactly one must be specified.** It does not create networking resources.
+
+Subnet precedence:
+
+1. When `subnet_ids` is nonempty, it is used directly for **both** the EKS control plane and default node group.
+2. Otherwise, `private_subnet_ids` is used when set; otherwise the module resolves `private_subnet_names` by `Name` tag in the selected VPC.
+3. Similarly, `public_subnet_ids` is used when set; otherwise the module resolves `public_subnet_names`.
+4. The selected private and public subnet lists are concatenated.
+
+Examples:
+
+```hcl
+# Direct selection: takes precedence over private/public inputs
+subnet_ids = ["subnet-aaaaaaaaaaaaaaaaa", "subnet-bbbbbbbbbbbbbbbbb"]
+```
+
+```hcl
+# Name-based selection (Name tags must match exactly and resolve uniquely)
+private_subnet_names = ["app-private-az1", "app-private-az2"]
+```
+
+```hcl
+# Mixed explicit IDs
+private_subnet_ids = ["subnet-aaaaaaaaaaaaaaaaa", "subnet-bbbbbbbbbbbbbbbbb"]
+public_subnet_ids  = []
+```
+
+**Caveats:**
+
+- `private` and `public` in the input names are caller-declared labels; this module does **not** inspect route tables to classify subnets automatically.
+- It does **not** discover subnets automatically when all subnet inputs are empty.
+- The currently committed code validates direct `subnet_ids` format, uniqueness, and nonempty-list minimum count, but does not enforce cross-VPC membership or multi-AZ placement for every subnet selection method.
+- For production, verify **at least two Availability Zones**, subnet routing, IP capacity, EKS service requirements, and worker outbound connectivity. Prefer private worker subnets.
+- An EKS private-only API endpoint requires network reachability (VPN, Direct Connect, bastion, VPC-connected runner, etc.) for `kubectl`.
+
+## Kubernetes version management
+
+Set `cluster_version` to the EKS-supported Kubernetes version approved for your deployment:
+
+```hcl
+cluster_version = "1.37"
+```
+
+**Current implementation:** `cluster_version` defaults to `null`; when omitted, EKS selects the version used at creation. The managed node group currently does **not** set its `version` argument explicitly. EKS manages the initial compatible node version, but coordinated node-group upgrades must be checked and planned deliberately.
+
+To upgrade an existing cluster:
+
+1. Check EKS support for the desired version in your Region and confirm add-on/workload compatibility.
+2. Update `cluster_version` by **one supported minor-version increment**.
+3. Review the Terraform plan and upgrade the control plane.
+4. Upgrade/verify node groups and managed add-ons separately as appropriate.
+5. Validate node readiness, application availability, and rollback/recovery plans.
+
+Kubernetes minor-version **downgrades are not supported** by EKS. Do not change `cluster_version` in an existing environment without an approved upgrade procedure.
+
+## Optional managed node group
+
+| Setting | Description | Default |
+|---|---|---|
+| `create_default_node_group` | Create module-managed node group and its IAM resources | `true` |
+| `node_group_name` | Override generated node group name | `null` (generated) |
+| `node_group_instance_types` | Worker EC2 types | `["t3.medium"]` |
+| `node_group_capacity_type` | `ON_DEMAND` or `SPOT` | `ON_DEMAND` |
+| `node_group_ami_type` | Supported Amazon Linux 2023 EKS AMI type | `AL2023_x86_64_STANDARD` |
+| `node_group_min_size` | Minimum node count | `1` |
+| `node_group_desired_size` | Desired node count | `2` |
+| `node_group_max_size` | Maximum node count | `3` |
+| `node_group_disk_size` | Root disk in GiB | `50` |
+| `attach_cni_policy` | Attach `AmazonEKS_CNI_Policy` to worker role | `true` |
+
+To create only the cluster and its cluster IAM resources:
+
+```hcl
+create_default_node_group = false
+```
+
+Setting this to `false` **after deployment will plan the destruction of this module's managed node group and associated resources**. Treat this as a potentially disruptive operation.
+
+The worker role is granted the AWS-managed `AmazonEKSWorkerNodePolicy` and `AmazonEC2ContainerRegistryPullOnly` policies; the VPC CNI policy attachment is optional. Node group creation has explicit dependencies on these attachments.
+
+## Optional EC2 launch template
+
+A custom launch template is created only when **both** are true:
+
+```hcl
+create_default_node_group = true
+enable_launch_template   = true
+```
+
+| Setting | Behavior | Default |
+|---|---|---|
+| `enable_launch_template` | Create custom EC2 launch template | `true` |
+| `node_group_volume_type` | `gp2` or `gp3` root EBS volume | `gp3` |
+| `node_group_disk_size` | Root EBS volume size | `50` GiB |
+| `node_group_volume_kms_key_arn` | Optional customer-managed EBS KMS key | `null` |
+| `enable_node_detailed_monitoring` | EC2 detailed monitoring | `false` |
+
+When enabled, the custom launch template specifies:
+
+- Encrypted root EBS volume (`/dev/xvda`), delete on termination.
+- IMDSv2 required (`http_tokens = "required"`).
+- `http_put_response_hop_limit = 1` (addresses Checkov `CKV_AWS_341`).
+- Instance metadata tags disabled.
+- Mandatory/custom tags for the launch template, EC2 instances, and EBS volumes.
+
+When disabled, the managed node group is created without a custom launch template and uses `node_group_disk_size` directly. **Do not assume all launch-template security settings are enforced in that mode.**
+
+**Operational notes:** A hop limit of 1 can affect software inside containers that relies on direct IMDS; use EKS Pod Identity or IRSA instead. A customer-managed EBS KMS key requires appropriate permissions for the EC2 Auto Scaling service-linked role. Changing launch template usage for an existing node group may require replacement; always inspect the plan.
+
+## EKS API access and encryption
+
+API endpoint defaults:
+
+```hcl
+endpoint_private_access = true
+endpoint_public_access  = false
+public_access_cidrs     = []
+```
+
+When enabling a public endpoint, explicitly supply **restricted** CIDR ranges permitted for your organization; verify access in the AWS console and Terraform plan. The current repository does not enforce non-open CIDR validation.
+
+Optional customer-managed KMS encryption for Kubernetes secrets:
+
+```hcl
+enable_cluster_kms_encryption = true
+cluster_kms_key_arn           = "arn:aws:kms:us-east-1:123456789012:key/REPLACE-ME"
+```
+
+The KMS key must already exist, and its policy must allow the necessary EKS operations. This module does not create KMS keys. AWS may provide default EKS secrets encryption independently of this optional customer-managed setting.
+
+## Naming and tagging
+
+The cluster naming pattern is:
+
+```text
+UPPER(ENVIRONMENT-ENVIRONMENT_CODE-APPLICATION_CODE-APPLICATION-NN)
+```
+
+With example inputs (`Dev`, `A1`, `TF`, `Atf`, `1`), the names are:
+
+| Resource | Example generated name |
+|---|---|
+| EKS cluster | `DEV-A1-TF-ATF-01` |
+| Cluster IAM role | `DEV-A1-TF-ATF-01-CLUSTER-ROLE` |
+| Worker IAM role | `DEV-A1-TF-ATF-01-NODE-ROLE` |
+| Default node group | `DEV-A1-TF-ATF-01-NODES` |
+| Launch template | `DEV-A1-TF-ATF-01-NODES-LT` |
+| Worker EC2 instance Name tag | `DEV-A1-TF-ATF-01-NODES` |
+| Root EBS Name tag | `DEV-A1-TF-ATF-01-NODES-EBS` |
+
+Mandatory tags: `application`, `application_code`, `environment`, `environment_code`, `project`, `backup`, `owner`, `app_owner`, and `description`. Resource-specific `Name` tags are also applied. Values in `tags` cannot override these mandatory keys.
+
+## Inputs
+
+The tables below reflect the currently committed `variables.tf` on `master` (November 2026).
+
+### Organization and naming
+
+| Variable | Type | Required | Default / rules |
+|---|---|---|---|
+| `application` | `string` | Yes | Max 7 characters |
+| `application_code` | `string` | Yes | Max 3 characters |
+| `environment` | `string` | No | `Dev`; choices: `Dev`, `Qa`, `Stage`, `PreProd`, `Production` |
+| `environment_code` | `string` | No | `A1`; exactly 2 characters |
+| `cluster_number` | `number` | No | `1`; between 1 and 99 |
+| `project` | `string` | No | `""`; max 7 characters |
+| `owner` | `string` | Yes | Must match `@veen.com` email validation |
+| `app_owner` | `string` | Yes | Must match `@veen.com` email validation |
+| `backup` | `string` | No | `N/A`; `N/A`, `NonProd`, or `Prod` |
+| `description` | `string` | Yes | At least 10 characters |
+| `tags` | `map(string)` | No | `{ env = "NP" }` |
+
+### VPC and subnets
+
+| Variable | Type | Default |
+|---|---|---|
+| `vpc_id` | `string` | `null` |
+| `vpc_name` | `string` | `null` |
+| `subnet_ids` | `list(string)` | `[]` |
+| `private_subnet_ids` | `list(string)` | `[]` |
+| `private_subnet_names` | `list(string)` | `[]` |
+| `public_subnet_ids` | `list(string)` | `[]` |
+| `public_subnet_names` | `list(string)` | `[]` |
+
+### Cluster and endpoint
+
+| Variable | Type | Default |
+|---|---|---|
+| `cluster_version` | `string` | `null` |
+| `endpoint_private_access` | `bool` | `true` |
+| `endpoint_public_access` | `bool` | `false` |
+| `public_access_cidrs` | `list(string)` | `[]` |
+| `enable_cluster_kms_encryption` | `bool` | `false` |
+| `cluster_kms_key_arn` | `string` | `null` |
+
+### Node group and launch template
+
+| Variable | Type | Default |
+|---|---|---|
+| `create_default_node_group` | `bool` | `true` |
+| `node_group_name` | `string` | `null` |
+| `node_group_instance_types` | `list(string)` | `["t3.medium"]` |
+| `node_group_capacity_type` | `string` | `ON_DEMAND` |
+| `node_group_ami_type` | `string` | `AL2023_x86_64_STANDARD` |
+| `node_group_min_size` | `number` | `1` |
+| `node_group_desired_size` | `number` | `2` |
+| `node_group_max_size` | `number` | `3` |
+| `node_group_disk_size` | `number` | `50` |
+| `attach_cni_policy` | `bool` | `true` |
+| `enable_launch_template` | `bool` | `true` |
+| `node_group_volume_type` | `string` | `gp3` |
+| `node_group_volume_kms_key_arn` | `string` | `null` |
+| `enable_node_detailed_monitoring` | `bool` | `false` |
+
+## Outputs
+
+| Output | Description |
+|---|---|
+| `cluster_id` | EKS cluster ID |
+| `cluster_name` | EKS cluster name |
+| `cluster_arn` | EKS cluster ARN |
+| `cluster_endpoint` | Kubernetes API endpoint |
+| `cluster_version` | Effective EKS Kubernetes version |
+| `cluster_security_group_id` | EKS-created cluster security group ID |
+| `cluster_iam_role_arn` | Cluster IAM role ARN |
+| `node_group_id` | Managed node group ID, or `null` if disabled |
+| `node_group_role_arn` | Node group IAM role ARN, or `null` if disabled |
+| `launch_template_id` | Launch template ID, or `null` if disabled |
+| `launch_template_version` | Launch template latest version, or `null` if disabled |
+
+Root module example:
+
+```hcl
+output "eks_cluster_name" {
+  value = module.eks.cluster_name
+}
+
+output "eks_cluster_endpoint" {
+  value = module.eks.cluster_endpoint
+}
+```
+
+## Validation scenarios
+
+The following counts were verified in user-provided Terraform plan output for a new test environment, with optional logging/additional resources absent and CNI policy attachment enabled:
+
+| `create_default_node_group` | `enable_launch_template` | Expected creates |
+|---|---|---:|
+| `false` | Either | 3 |
+| `true` | `false` | 8 |
+| `true` | `true` | 9 |
+
+The nine-resource scenario was also reported successfully applied. Counts change depending on existing Terraform state and future module features.
+
+Examples when running Terraform **within the module repository**, with the included `variables/test.tfvars`:
 
 ```bash
-terraform apply -var-file="test.tfvars"
+terraform plan -var-file=variables/test.tfvars \
+  -var='create_default_node_group=true' \
+  -var='enable_launch_template=true'
+
+terraform plan -var-file=variables/test.tfvars \
+  -var='create_default_node_group=true' \
+  -var='enable_launch_template=false'
+
+terraform plan -var-file=variables/test.tfvars \
+  -var='create_default_node_group=false'
 ```
 
-## Destroy
+**WARNING:** If resources already exist in the current state, switching flags can show **destructive** changes instead of the fresh-create counts. Never apply toggle-based test plans to an existing production environment without reviewing the full diff.
 
-```bash
-terraform destroy -var-file="test.tfvars"
-```
-
----
-
-# Input Validation
-
-The module contains Terraform-native validation for important inputs.
-
-### Application
-
-```text
-Maximum 7 characters
-```
-
-### Application Code
-
-```text
-Maximum 3 characters
-```
-
-### Environment
-
-```text
-Dev
-Qa
-Stage
-PreProd
-Production
-```
-
-### Environment Code
-
-```text
-Exactly 2 characters
-```
-
-### Owner
-
-Must be a valid:
-
-```text
-@veen.com
-```
-
-email address.
-
-### Application Owner
-
-Must be a valid:
-
-```text
-@veen.com
-```
-
-email address.
-
-### Backup
-
-Allowed:
-
-```text
-N/A
-NonProd
-Prod
-```
-
-### Cluster Version
-
-Expected format:
-
-```text
-MAJOR.MINOR
-```
-
-### VPC ID
-
-Expected format:
-
-```text
-vpc-xxxxxxxxxxxxxxxxx
-```
-
-### Subnet IDs
-
-Requirements:
-
-```text
-Minimum 2 subnet IDs
-Valid AWS subnet IDs
-No duplicate subnet IDs
-```
-
-### Node Group
-
-The module validates:
-
-```text
-Instance types must not be empty
-Capacity type must be ON_DEMAND or SPOT
-Minimum size >= 0
-Desired size >= 1
-Maximum size >= 1
-Disk size >= 20 GiB
-AMI type must be supported
-```
-
----
-
-# Recommended Node Group Configuration
-
-For a development/test environment:
-
-```hcl
-node_group_instance_types = [
-  "t3.medium"
-]
-
-node_group_capacity_type = "ON_DEMAND"
-
-node_group_min_size     = 1
-node_group_desired_size = 2
-node_group_max_size     = 3
-
-node_group_disk_size = 50
-
-node_group_ami_type = "AL2023_x86_64_STANDARD"
-```
-
-For production, select instance types and scaling limits based on workload requirements, CPU/memory utilization, availability requirements, and cost objectives.
-
----
-
-# Subnet Requirements
-
-EKS requires the cluster to be associated with appropriate subnets across Availability Zones.
-
-This module requires:
-
-```text
-Minimum: 2 subnets
-```
-
-Recommended configuration:
-
-```text
-Availability Zone A
-    └── Subnet A
-
-Availability Zone B
-    └── Subnet B
-
-Availability Zone C
-    └── Subnet C
-```
-
-For production environments, using subnets across multiple Availability Zones is recommended for improved availability.
-
----
-
-# VPC Selection
-
-The module supports existing VPC selection.
-
-## Using VPC ID
-
-```hcl
-vpc_id = "vpc-0123456789abcdef0"
-```
-
-## Using VPC Name
-
-```hcl
-vpc_name = "TF_VPC"
-```
-
-The module should resolve the appropriate existing VPC based on the configured selection method.
-
----
-
-# Example Project Structure
-
-A recommended root-module structure:
-
-```text
-terraform-eks/
-│
-├── main.tf
-├── variables.tf
-├── outputs.tf
-├── providers.tf
-├── versions.tf
-├── locals.tf
-│
-├── test.tfvars
-│
-└── README.md
-```
-
-If this repository itself is the reusable module:
-
-```text
-aws-eks-module/
-│
-├── main.tf
-├── variables.tf
-├── outputs.tf
-├── locals.tf
-├── data.tf
-├── versions.tf
-├── README.md
-│
-└── examples/
-    └── basic/
-        ├── main.tf
-        ├── variables.tf
-        ├── outputs.tf
-        └── terraform.tfvars
-```
-
----
-
-# Security Considerations
-
-This module follows an existing-infrastructure approach and does not create a new VPC.
-
-Before deploying the module, ensure that:
-
-* IAM permissions follow least privilege
-* EKS control-plane access is appropriately restricted
-* Worker nodes are deployed into appropriate subnets
-* Security groups are appropriately configured
-* EBS volumes are encrypted
-* Cluster logging requirements are evaluated
-* Kubernetes access is controlled using appropriate IAM/RBAC configuration
-* Production workloads use multiple Availability Zones
-* Sensitive values are not stored in `.tfvars` files committed to Git
-
-Do not commit credentials, secrets, or sensitive configuration to source control.
-
----
-
-# Validation and Testing
-
-Run the following before creating infrastructure:
+Static checks:
 
 ```bash
 terraform fmt -check -recursive
-terraform init
 terraform validate
-terraform plan -var-file="test.tfvars"
+checkov -d . --framework terraform
 ```
 
-Recommended CI/CD checks include:
+## Post-deployment checks
 
-```text
-Terraform Format
-Terraform Validate
-Terraform Plan
-Security Scanning
-Terraform Configuration Scanning
+Replace `CLUSTER_NAME` and `NODE_GROUP_NAME` if you customized the generated names:
+
+```bash
+aws eks describe-cluster \
+  --region us-east-1 \
+  --name DEV-A1-TF-ATF-01 \
+  --query 'cluster.{Name:name,Version:version,Status:status}'
+
+aws eks describe-nodegroup \
+  --region us-east-1 \
+  --cluster-name DEV-A1-TF-ATF-01 \
+  --nodegroup-name DEV-A1-TF-ATF-01-NODES \
+  --query 'nodegroup.{Status:status,Health:health.issues}'
+
+aws eks update-kubeconfig \
+  --region us-east-1 \
+  --name DEV-A1-TF-ATF-01
+
+kubectl get nodes -o wide
+kubectl get pods -A
 ```
 
-Tools such as Checkov can be incorporated into the CI/CD pipeline for infrastructure security scanning.
+With `endpoint_public_access = false`, run `kubectl` from a machine with private VPC reachability and a principal authorized for Kubernetes access. Successful `terraform apply` alone does not prove nodes are `Ready` or that the current operator can use `kubectl`.
 
----
+Check for drift after apply:
 
-# Troubleshooting
-
-## Error: At least two valid subnet IDs must be provided
-
-Ensure that at least two valid subnet IDs are configured:
-
-```hcl
-subnet_ids = [
-  "subnet-xxxxxxxxxxxxxxxxx",
-  "subnet-yyyyyyyyyyyyyyyyy"
-]
+```bash
+terraform plan
 ```
 
----
+If you originally applied using a `.tfvars` file, use **the same inputs** when checking drift:
 
-## Error: Duplicate subnet IDs
-
-Do not provide the same subnet more than once.
-
-Invalid:
-
-```hcl
-subnet_ids = [
-  "subnet-xxxxxxxxxxxxxxxxx",
-  "subnet-xxxxxxxxxxxxxxxxx"
-]
+```bash
+terraform plan -var-file=variables/test.tfvars
 ```
 
-Valid:
+## Current limitations and roadmap
 
-```hcl
-subnet_ids = [
-  "subnet-xxxxxxxxxxxxxxxxx",
-  "subnet-yyyyyyyyyyyyyyyyy"
-]
+The following are **not implemented** in the current committed module and should not be inferred from a successful apply:
+
+- Terraform-managed **EKS access entries** and IAM identity-to-Kubernetes access policy associations.
+- Terraform-managed **EKS add-ons** (for example, VPC CNI, CoreDNS, kube-proxy) with explicit version management.
+- An explicit **cluster deletion protection** setting.
+- **EKS control plane CloudWatch log group/log type management** and retention configuration.
+- Automatic subnet discovery or route-table-based public/private subnet detection.
+- Enforced validation that all selected subnets belong to the VPC and span two Availability Zones.
+- A blocking scaling invariant: the existing `check "node_group_scaling"` emits a warning rather than preventing apply.
+- Explicit node group Kubernetes version pinning in `aws_eks_node_group`.
+- Automated monitoring, autoscaling add-ons, workload deployment, disaster recovery, or application-level security controls.
+
+### Production considerations
+
+1. Ensure a secure remote state backend, state locking, least-privilege deployment role, and CI policy checks.
+2. Validate subnet and network prerequisites (including node-to-EKS communication, ECR access, DNS, NAT or appropriate VPC endpoints).
+3. Configure access entries / administrative access explicitly and test private API endpoint reachability.
+4. Establish logging, add-on lifecycle management, alerts, backups, and upgrade procedures.
+5. Review the effect of modifying `cluster_version`, `create_default_node_group`, `enable_launch_template`, and KMS settings in an existing state before applying.
+6. Do not interpret the AWS provider's tolerated legacy SDK warnings as security findings; investigate any drift or failed operations separately.
+
+## Destruction
+
+Only destroy **disposable test environments** after reviewing the plan:
+
+```bash
+terraform plan -destroy -var-file=variables/test.tfvars
+terraform destroy -var-file=variables/test.tfvars
 ```
 
----
+Destruction may delete managed worker nodes and the EKS control plane, causing service outages and data loss for workloads. This module does not create or destroy the shared VPC/subnets.
 
-## Error: Invalid cluster version
+## Repository
 
-Use the expected `MAJOR.MINOR` format.
+Source: <https://github.com/CHERUKURIPRAVEEN/aws-eks-module>
 
-Valid:
-
-```hcl
-cluster_version = "1.33"
-```
-
-Invalid:
-
-```hcl
-cluster_version = "1.33.0"
-```
-
----
-
-## Error: Invalid capacity type
-
-Only the following values are supported:
-
-```text
-ON_DEMAND
-SPOT
-```
-
-Example:
-
-```hcl
-node_group_capacity_type = "ON_DEMAND"
-```
-
----
-
-# Design Principles
-
-This module follows several design principles:
-
-### Reusable
-
-The module is intended to be consumed by multiple environments rather than being tightly coupled to a single EKS cluster.
-
-### Validated Inputs
-
-Invalid values should be rejected as early as possible through Terraform variable validation.
-
-### Existing Networking
-
-The module consumes an existing VPC and subnet infrastructure rather than creating networking resources.
-
-### Minimal Scope
-
-The module focuses on:
-
-```text
-EKS Cluster
-IAM Role
-Managed Node Group
-```
-
-Additional infrastructure can be managed independently.
-
-### Environment Agnostic
-
-The same module can be used for:
-
-```text
-Dev
-Qa
-Stage
-PreProd
-Production
-```
-
-by changing input variables.
-
----
-
-# Versioning
-
-Use Git tags to publish stable versions of the module.
-
-Example:
-
-```text
-v0.1.0
-v0.2.0
-v1.0.0
-```
-
-Consumers can pin a specific version:
-
-```hcl
-module "eks" {
-  source = "git::https://github.com/CHERUKURIPRAVEEN/aws-eks-module.git?ref=v1.0.0"
-
-  # ...
-}
-```
-
-Version pinning is recommended for production workloads.
-
----
-
-# Example
-
-A complete minimal configuration:
-
-```hcl
-module "eks" {
-  source = "./"
-
-  application      = "EKSAPP"
-  application_code = "EKS"
-
-  environment      = "Dev"
-  environment_code = "A1"
-
-  project     = "EKS"
-  owner       = "devops@veen.com"
-  app_owner   = "appowner@veen.com"
-  backup      = "NonProd"
-  description = "EKS cluster test environment"
-
-  vpc_id = "vpc-0123456789abcdef0"
-
-  subnet_ids = [
-    "subnet-0123456789abcdef0",
-    "subnet-0123456789abcdef1"
-  ]
-
-  cluster_name    = "test-eks-cluster"
-  cluster_version = "1.33"
-
-  node_group_name = "test-eks-ng"
-
-  node_group_instance_types = [
-    "t3.medium"
-  ]
-
-  node_group_capacity_type = "ON_DEMAND"
-
-  node_group_min_size     = 1
-  node_group_desired_size = 2
-  node_group_max_size     = 3
-
-  node_group_disk_size = 50
-
-  node_group_ami_type = "AL2023_x86_64_STANDARD"
-}
-```
-
----
-
-# License
-
-This project is licensed under the terms specified in the repository's `LICENSE` file.
-
----
-
-# Author
-
-**Praveen Cherukuri**
-
-DevOps Engineer
-
----
-
-## Disclaimer
-
-This Terraform module is intended to provide a reusable baseline for deploying Amazon EKS infrastructure. Production deployments should be reviewed against the organization's security, networking, compliance, availability, and operational requirements.
+Maintained by **Praveen Cherukuri**.
